@@ -7,28 +7,29 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.9.0,<3.13"
-langgraph = "^0.1.0"
-langchain-fireworks = "^0.1.3"
+langgraph = "^0.2.12"
+langchain-fireworks = "^0.1.7"
 # Feel free to swap out for postgres or your favorite database.
 langchain-pinecone = "^0.1.1"
 jsonpatch = "^1.33"
 dydantic = "^0.0.6"
 pytest-asyncio = "^0.23.7"
-trustcall = "^0.0.4"
+trustcall = "^0.0.12"
 langchain = "^0.2.6"
-langchain-openai = "^0.1.10"
-langchain-anthropic = "^0.1.19"
+langchain-openai = "^0.1.22"
+langchain-anthropic = "^0.1.23"
 pydantic-settings = "^2.3.4"
-langgraph-sdk = "^0.1.23"
-langchain-community = "^0.2.6"
-tavily-python = "^0.3.3"
+langgraph-sdk = "^0.1.28"
+langchain-community = "^0.2.12"
+tavily-python = "^0.4.0"
 tiktoken = "^0.7.0"
+langchain-qdrant = "^0.1.3"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.4.10"
 mypy = "^1.10.0"
 pytest = "^8.2.2"
-langgraph-cli = "^0.1.43"
+langgraph-cli = "^0.1.51"
 
 [tool.ruff]
 lint.select = [

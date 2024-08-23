@@ -17,7 +17,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import langsmith
 import tiktoken
@@ -31,6 +31,7 @@ from langchain_core.runnables.config import (
     get_executor_for_config,
 )
 from langchain_core.tools import tool
+from langchain_core.documents import Document
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from typing_extensions import Literal
@@ -39,6 +40,9 @@ from lang_memgpt import _constants as constants
 from lang_memgpt import _schemas as schemas
 from lang_memgpt import _settings as settings
 from lang_memgpt import _utils as utils
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from qdrant_client.http import models
 
 logger = logging.getLogger("memory")
 
@@ -62,30 +66,25 @@ async def save_recall_memory(memory: str) -> str:
     """
     config = ensure_config()
     configurable = utils.ensure_configurable(config)
-    embeddings = utils.get_embeddings()
-    vector = await embeddings.aembed_query(memory)
     current_time = datetime.now(tz=timezone.utc)
-    path = constants.INSERT_PATH.format(
-        user_id=configurable["user_id"],
-        event_id=str(uuid.uuid4()),
-    )
-    documents = [
-        {
-            "id": path,
-            "values": vector,
-            "metadata": {
+    event_id = str(uuid.uuid4())
+    path = constants.INSERT_PATH.format(user_id=configurable["user_id"], event_id=event_id)
+
+    try:
+        utils.get_vector_store(configurable).add_texts(
+            texts=[memory],
+            metadatas=[{
                 constants.PAYLOAD_KEY: memory,
                 constants.PATH_KEY: path,
                 constants.TIMESTAMP_KEY: current_time,
                 constants.TYPE_KEY: "recall",
-                "user_id": configurable["user_id"],
-            },
-        }
-    ]
-    utils.get_index().upsert(
-        vectors=documents,
-        namespace=settings.SETTINGS.pinecone_namespace,
-    )
+                constants.USER_ID_KEY: configurable["user_id"]
+            }],
+            ids=[str(uuid.uuid4())],
+        )
+    except Exception as e:
+        logger.error(f"Error saving recall memory: {e}")
+        return "Error: Failed to save memory."
     return memory
 
 
@@ -102,25 +101,61 @@ def search_memory(query: str, top_k: int = 5) -> list[str]:
     """
     config = ensure_config()
     configurable = utils.ensure_configurable(config)
-    embeddings = utils.get_embeddings()
-    vector = embeddings.embed_query(query)
     with langsmith.trace("query", inputs={"query": query, "top_k": top_k}) as rt:
-        response = utils.get_index().query(
-            vector=vector,
-            filter={
-                "user_id": {"$eq": configurable["user_id"]},
-                constants.TYPE_KEY: {"$eq": "recall"},
-            },
-            namespace=settings.SETTINGS.pinecone_namespace,
-            include_metadata=True,
-            top_k=top_k,
+        response = utils.get_vector_store(configurable).similarity_search(
+            query=query,
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(key=f"metadata.{constants.USER_ID_KEY}", match=models.MatchValue(value=configurable["user_id"])),
+                    models.FieldCondition(key=f"metadata.{constants.TYPE_KEY}", match=models.MatchValue(value="recall")),
+                ]
+            ),
+            k=top_k,
         )
         rt.end(outputs={"response": response})
     memories = []
-    if matches := response.get("matches"):
-        memories = [m["metadata"][constants.PAYLOAD_KEY] for m in matches]
+    for doc in response:
+        memories.append(doc.page_content)
     return memories
 
+
+def filter_documents(
+        qdrant_vector_store,
+        filter: Optional[models.Filter] = None,
+        limit: int = 10,
+        offset: int = 0,
+        **kwargs: Any,
+    ) -> List[Document]:
+        """Return docs filtered by conditions without considering similarity.
+
+        Args:
+            filter: Filter conditions to apply.
+            limit: Maximum number of documents to return.
+            offset: Number of documents to skip.
+            **kwargs: Additional arguments to pass to the scroll method.
+
+        Returns:
+            List of Documents that match the filter conditions.
+        """
+        results = qdrant_vector_store.client.scroll(
+            collection_name=qdrant_vector_store.collection_name,
+            scroll_filter=filter,
+            limit=limit,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+            **kwargs,
+        )[0]
+
+        return [
+            qdrant_vector_store._document_from_point(
+                result,
+                qdrant_vector_store.collection_name,
+                qdrant_vector_store.content_payload_key,
+                qdrant_vector_store.metadata_payload_key,
+            )
+            for result in results
+        ]
 
 @langsmith.traceable
 def fetch_core_memories(user_id: str) -> Tuple[str, list[str]]:
@@ -133,14 +168,27 @@ def fetch_core_memories(user_id: str) -> Tuple[str, list[str]]:
         Tuple[str, list[str]]: The path and list of core memories.
     """
     path = constants.PATCH_PATH.format(user_id=user_id)
-    response = utils.get_index().fetch(
-        ids=[path], namespace=settings.SETTINGS.pinecone_namespace
+    config = ensure_config()
+    configurable = utils.ensure_configurable(config)
+    response = filter_documents(
+        utils.get_vector_store(configurable),
+        filter=models.Filter(
+            must=[
+                models.FieldCondition(key=f"metadata.{constants.USER_ID_KEY}", match=models.MatchValue(value=user_id)),
+                models.FieldCondition(key=f"metadata.{constants.TYPE_KEY}", match=models.MatchValue(value="core")),
+            ]
+        ),
     )
     memories = []
-    if vectors := response.get("vectors"):
-        document = vectors[path]
-        payload = document["metadata"][constants.PAYLOAD_KEY]
-        memories = json.loads(payload)["memories"]
+    # response is a list of documents with page_content and metadata
+    for doc in response:
+        try:
+            parsed_memories = json.loads(doc.page_content)
+            if "memories" in parsed_memories:
+                memories.extend(parsed_memories["memories"])
+        except Exception as e:
+            logger.error(f"Error parsing core memory: {e}")
+            logger.error(f"Failed to parse memory: {doc.page_content}")
     return path, memories
 
 
@@ -158,31 +206,32 @@ def store_core_memory(memory: str, index: Optional[int] = None) -> str:
     config = ensure_config()
     configurable = utils.ensure_configurable(config)
     path, memories = fetch_core_memories(configurable["user_id"])
+    user_id = configurable["user_id"]
+    stable_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"core_memory:{user_id}"))
     if index is not None:
         if index < 0 or index >= len(memories):
             return "Error: Index out of bounds."
         memories[index] = memory
     else:
         memories.insert(0, memory)
-    documents = [
-        {
-            "id": path,
-            "values": _EMPTY_VEC,
-            "metadata": {
-                constants.PAYLOAD_KEY: json.dumps({"memories": memories}),
-                constants.PATH_KEY: path,
-                constants.TIMESTAMP_KEY: datetime.now(tz=timezone.utc),
-                constants.TYPE_KEY: "recall",
-                "user_id": configurable["user_id"],
-            },
-        }
-    ]
-    utils.get_index().upsert(
-        vectors=documents,
-        namespace=settings.SETTINGS.pinecone_namespace,
+
+    memories_json = json.dumps({"memories": memories})
+
+    qdrant_vector_store = utils.get_vector_store(configurable)
+    metadata = {
+        constants.PAYLOAD_KEY: memories_json,
+        constants.PATH_KEY: path,
+        constants.TIMESTAMP_KEY: datetime.now(tz=timezone.utc).isoformat(),
+        constants.TYPE_KEY: "core",
+        constants.USER_ID_KEY: configurable["user_id"],
+    }
+
+    qdrant_vector_store.add_texts(
+        texts=[memories_json],
+        metadatas=[metadata],
+        ids=[stable_uuid],
     )
     return "Memory stored."
-
 
 # Combine all tools
 all_tools = tools + [save_recall_memory, search_memory, store_core_memory]
@@ -254,7 +303,7 @@ async def agent(state: schemas.State, config: RunnableConfig) -> schemas.State:
         schemas.State: The updated state with the agent's response.
     """
     configurable = utils.ensure_configurable(config)
-    llm = init_chat_model(configurable["model"])
+    llm = init_chat_model(configurable["model"], model_provider=configurable["provider"], api_key=configurable["api_key"])
     bound = prompt | llm.bind_tools(all_tools)
     core_str = (
         "<core_memory>\n" + "\n".join(state["core_memories"]) + "\n</core_memory>"
@@ -298,6 +347,7 @@ def load_memories(state: schemas.State, config: RunnableConfig) -> schemas.State
         ]
         _, core_memories = futures[0].result()
         recall_memories = futures[1].result()
+
     return {
         "core_memories": core_memories,
         "recall_memories": recall_memories,

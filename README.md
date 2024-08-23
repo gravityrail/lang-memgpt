@@ -1,10 +1,10 @@
-# Lang-MemGPT
+# Stu's Discord Bot
 
-This repo provides a simple example of memory service you can build and deploy using LanGraph.
+This is (or, will be, depending when you read this) a Discord bot that uses LangGraph to provide long-term memory to a Discord server.
 
-Inspired by papers like [MemGPT](https://memgpt.ai/) and distilled from our own works on long-term memory, the graph
-extracts memories from chat interactions and persists them to a database. This information can later be read or queried semantically
-to provide personalized context when your bot is responding to a particular user.
+It is based on the excellent [LangChain MemGPT](https://github.com/langchain-ai/lang-memgpt/) project, but unbroken to work with the latest LangGraph Studio.
+
+Inspired by papers like [MemGPT](https://memgpt.ai/) and others.
 
 ![Process](./img/studio.gif)
 
@@ -28,22 +28,70 @@ The memory graph handles thread process deduplication and supports continuous up
 
 ## Quickstart
 
-This quick start will get your agent with long-term memory deployed on [LangGraph Cloud](https://langchain-ai.github.io/langgraph/cloud/). Once created, you can interact with it from any API.
+### Prerequisites
 
-#### Prerequisites
+This assumes a Mac with [Homebrew](https://brew.sh/) installed. Something similar is possible on Linux, but YMMV.
 
-This example defaults to using Pinecone for its memory database, and `nomic-ai/nomic-embed-text-v1.5` as the text encoder (hosted on Fireworks). For the LLM, we will use `accounts/fireworks/models/firefunction-v2`, which is a fine-tuned variant of Meta's `llama-3`.
+We need Poetry and Micromamba to install the dependencies and sandbox the environment.
 
-Before starting, make sure your resources are created.
+```bash
+brew install poetry micromamba
+```
 
-1. [Create an index](https://docs.pinecone.io/reference/api/control-plane/create_index) with a dimension size of `768`. Note down your Pinecone API key, index name, and namespac for the next step.
-2. [Create an API Key](https://fireworks.ai/api-keys) to use for the LLM & embeddings models served on Fireworks.
+Then, install the dependencies:
+
+```bash
+poetry install
+```
+
+Create a [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html) environment.
+
+```bash
+micromamba create python=3.10.13 -y -n stu-discord -c conda-forge
+micromamba activate stu-discord
+```
+
+This example defaults to using Qdrant for its memory database, and OpenAI's `text-embedding-3-small` as the text encoder. For the LLM, we are using OpenAI's `gpt-4o`.
+
+1. Visit [OpenAI](https://platform.openai.com/api-keys) to sign up and get an API Key
+2. Visit [Qdrant Cloud](https://cloud.qdrant.io/) to create a server and get an API key. Also note your "Server URL". The free tier is fine for this example.
+3. Visit [Tavily](https://app.tavily.com/) to get an API key.
+
+Now set these values in the `.env` file. You can copy the contents of `.env.example` to get started.
+
+```bash
+TAVILY_API_KEY=...
+OPENAI_API_KEY=...
+QDRANT_API_KEY=...
+QDRANT_URL=...
+QDRANT_COLLECTION_NAME=stu-discord
+```
+
+### Running Locally
+
+```bash
+python ./local.py
+```
+
+Example session:
+
+> *User*: Please remember that my anniversary is August 3rd, beginning in 2023
+> No messages {'core_memories': ["The user's name is Daniel Walmsley."], 'recall_memories': []}
+> *Tool Calls* [{'name': 'save_recall_memory', 'args': {'memory': "Daniel Walmsley's anniversary is August 3rd, starting in 2023."}, 'id': 'call_Bf8v2xdvsXkSxdvN9bPQJU64', 'type': 'tool_call'}]
+> *Assistant*: Daniel Walmsley's anniversary is August 3rd, starting in 2023.
+> *Assistant*: Got it! Your anniversary is on August 3rd, starting in 2023. If there's anything special you need help planning or remembering for next year's celebration, just let me know!
+
+Then, in a different session, we can recall the memory:
+
+> *User*: When is my anniversary?
+> No messages {'core_memories': ["The user's name is Daniel Walmsley."], 'recall_memories': ["Daniel Walmsley's anniversary is August 3rd, starting in 2023."]}
+> *Assistant*: Your anniversary is on August 3rd.
 
 #### Deploy to LangGraph Cloud
 
 **Note:** (_Closed Beta_) LangGraph Cloud is a managed service for deploying and hosting LangGraph applications. It is currently (as of 26 June, 2024) in closed beta. If you are interested in applying for access, please fill out [this form](https://www.langchain.com/langgraph-cloud-beta).
 
-To deploy this example on LangGraph, fork the [repo](https://github.com/langchain-ai/langgraph-memory).
+To deploy this example on LangGraph, fork this [repo](https://github.com/gravityrail/lang-memgpt).
 
 Next, navigate to the 🚀 deployments tab on [LangSmith](https://smith.langchain.com/o/ebbaf2eb-769b-4505-aca2-d11de10372a4/).
 
@@ -55,18 +103,7 @@ Once you have set up your GitHub connection, select **+New Deployment**. Fill ou
 2. You can leave the defaults for the config file (`langgraph.config`) and branch (`main`)
 3. Environment variables (see below)
 
-The default required environment variables can be found in [.env.example](.env.example) and are copied below:
-
-```bash
-# .env
-PINECONE_API_KEY=...
-PINECONE_INDEX_NAME=...
-PINECONE_NAMESPACE=...
-FIREWORKS_API_KEY=...
-
-# You can add other keys as appropriate, depending on
-# the services you are using.
-```
+The default required environment variables can be found in [.env.example](.env.example) and are described in the previous section.
 
 You can fill these out locally, copy the .env file contents, and paste them in the first `Name` argument.
 

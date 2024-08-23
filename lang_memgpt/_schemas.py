@@ -10,6 +10,10 @@ from typing_extensions import Annotated, TypedDict
 class GraphConfig(TypedDict):
     model: str | None
     """The model to use for the memory assistant."""
+    api_key: str | None
+    """The API key to use for the memory assistant."""
+    provider: str | None
+    """The model provider to use for the memory assistant."""
     thread_id: str
     """The thread ID of the conversation."""
     user_id: str
